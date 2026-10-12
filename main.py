@@ -45,7 +45,60 @@ ACCOUNTS_FILE = "accounts.json"
 TOKEN_CACHE_FILE = "token_cache.json"
 DEVICES_FILE = "devices.json"
 TOKEN_CACHE_TTL = 21600  # 6h local cache; server-side rejection still forces re-login
+# ==================== ACCOUNTS.JSON SYNC ====================
+def _save_accounts_to_file(accounts: list):
+    """Save accounts.json safely."""
+    try:
+        tmp = ACCOUNTS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(accounts, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, ACCOUNTS_FILE)
+    except Exception as e:
+        print(f"[ACCOUNTS] Save failed: {e}")
 
+
+def _load_accounts_file() -> list:
+    """Load accounts.json as list."""
+    if not os.path.exists(ACCOUNTS_FILE):
+        return []
+    try:
+        with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _update_account_in_file(uid: str, level: int = None, region: str = None,
+                             nickname: str = None):
+    """Update level/region/nickname in accounts.json."""
+    try:
+        accounts = _load_accounts_file()
+        uid_str = str(uid)
+        found = False
+        for acc in accounts:
+            if str(acc.get('uid')) == uid_str:
+                if level is not None:
+                    acc['level'] = level
+                if region:
+                    acc['region'] = region
+                if nickname:
+                    acc['nickname'] = nickname
+                acc['updated_at'] = datetime.now().isoformat()
+                found = True
+                break
+        if not found:
+            accounts.append({
+                'uid': uid_str,
+                'level': level or 1,
+                'region': region or 'IND',
+                'nickname': nickname or f'Player_{uid_str}',
+                'updated_at': datetime.now().isoformat(),
+                'added_at': datetime.now().isoformat()
+            })
+        _save_accounts_to_file(accounts)
+    except Exception as e:
+        print(f"[ACCOUNTS] Update failed for {uid}: {e}")
 # 🔥 Match control
 START_MATCH_INTERVAL = 1.5
 NEW_MATCH_DELAY = 1.5
@@ -1970,7 +2023,13 @@ async def refresh_account_profile(account_data_or_uid: Any):
 
             # Keep the hot path in memory. Writing token_cache.json on every refresh
             # would add unnecessary disk I/O when many accounts are active.
-
+            # 👇 Sync to accounts.json
+_update_account_in_file(
+    uid=acc_id,
+    level=level,
+    region=account_data.get('region', 'IND'),
+    nickname=nickname
+)
             print_info(f"[EXP-REFRESH] UID {acc_id} -> Level: {level}, EXP: {exp}")
             return True
     except asyncio.CancelledError:
@@ -2410,24 +2469,50 @@ async def main():
         print_error(f"Could not start web dashboard: {e}")
 
     async def on_account_added_handler(data):
-        if "token" in data and data["token"]:
-            t = str(data["token"]).strip()
-            key = t[:10]
-            existing = bot_state.account_workers.get(key)
-            if existing and not existing.done():
-                bot_state.log(f"Account worker already running: {key}", "warning")
-                return
-            task = asyncio.create_task(account_loop_token(t))
-            bot_state.account_workers[key] = task
-        elif "uid" in data and "password" in data:
-            u = str(data["uid"]).strip()
-            p = str(data["password"]).strip()
-            existing = bot_state.account_workers.get(u)
-            if existing and not existing.done():
-                bot_state.log(f"Account worker already running: {u}", "warning", u)
-                return
-            task = asyncio.create_task(account_loop_guest(u, p))
-            bot_state.account_workers[u] = task
+    if "token" in data and data["token"]:
+        t = str(data["token"]).strip()
+        key = t[:10]
+        existing = bot_state.account_workers.get(key)
+        if existing and not existing.done():
+            bot_state.log(f"Account worker already running: {key}", "warning")
+            return
+        task = asyncio.create_task(account_loop_token(t))
+        bot_state.account_workers[key] = task
+
+        # Save token to accounts.json
+        accounts = _load_accounts_file()
+        if not any(a.get("token") == t for a in accounts):
+            accounts.append({
+                "token": t,
+                "added_at": datetime.now().isoformat()
+            })
+            _save_accounts_to_file(accounts)
+            print_success(f"[ACCOUNTS] Token saved")
+
+    elif "uid" in data and "password" in data:
+        u = str(data["uid"]).strip()
+        p = str(data["password"]).strip()
+        existing = bot_state.account_workers.get(u)
+        if existing and not existing.done():
+            bot_state.log(f"Account worker already running: {u}", "warning", u)
+            return
+        task = asyncio.create_task(account_loop_guest(u, p))
+        bot_state.account_workers[u] = task
+
+        # Save UID+password to accounts.json
+        accounts = _load_accounts_file()
+        if not any(str(a.get("uid")) == u for a in accounts):
+            accounts.append({
+                "uid": u,
+                "password": p,
+                "level": 1,
+                "region": "IND",
+                "nickname": f"Player_{u}",
+                "added_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat()
+            })
+            _save_accounts_to_file(accounts)
+            print_success(f"[ACCOUNTS] UID {u} saved")
 
     async def on_refresh_account_handler(uid):
         await refresh_account_profile(uid)

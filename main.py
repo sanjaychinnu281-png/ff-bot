@@ -1549,7 +1549,7 @@ async def functional_lone_wolf(addrs, starter_packet, account_region, client_ver
                         dashboard_mode = str(bot_state.get_account_mode(uid_str) or "BR").upper().strip()
                     except Exception:
                         dashboard_mode = "BR"
-                    if level_now > 3:
+                    if level_now >=3:
                         return "LW", level_now
                     if dashboard_mode in {"LW", "LONEWOLF", "LONE-WOLF", "LONE_WOLF"}:
                         return "LW", level_now

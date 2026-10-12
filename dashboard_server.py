@@ -102,22 +102,18 @@ class BotState:
                 )
             self.recalc_totals()
 
-    def get_account_level(self, uid: str) -> int:
-        acc = self.accounts.get(str(uid))
-        return int(acc.get("level", 1) or 1) if acc else 1
-
     def get_account_mode(self, uid: str) -> str:
         acc = self.accounts.get(str(uid))
         if not acc:
             return "BR"
-        # BR is the default through Level 10. Once the account is above Level 10,
-        # expose the effective automatic mode as Lone Wolf regardless of the saved preference.
+        # BR is the default until Level 3. From Level 3 onward, auto-switch
+        # to Lone Wolf regardless of the saved preference.
         level = int(acc.get("level", 1) or 1)
-        if level > 10:
+        if level >= 3:
             return "LONE_WOLF"
         mode = str(acc.get("mode", "BR") or "BR").upper()
         return "LONE_WOLF" if mode == "LONE_WOLF" and acc.get("mode_manual", False) else "BR"
-
+    
     def set_account_mode(self, uid: str, mode: str):
         uid_str = str(uid)
         mode = str(mode or "").upper().replace("-", "_").replace(" ", "_")
@@ -133,8 +129,8 @@ class BotState:
             return False, "Account not found"
 
         level = int(acc.get("level", 1) or 1)
-        if level < 5 and mode != "BR":
-            return False, "Lone Wolf is locked until Level 5"
+        if level < 3 and mode != "BR":
+            return False, "Lone Wolf is locked until Level 3"
 
         acc["mode"] = mode
         acc["mode_manual"] = True

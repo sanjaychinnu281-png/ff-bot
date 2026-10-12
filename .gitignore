@@ -1,0 +1,23 @@
+# Sensitive data — passwords, tokens
+accounts.json
+token_cache.json
+devices.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment variables
+.env
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/

@@ -451,9 +451,9 @@ body.nav-open .nav-overlay{display:block}
 <div class="app" id="appRoot">
   <aside class="sidebar" id="sidebar">
     <div class="logo">
-      <div class="logo-mark">
+    <div class="logo-mark">
         <svg viewBox="0 0 100 100">
-          <path d="M 15 80 L 15 25 L 50 60 L 85 25 L 85 80"/>
+          <text x="50" y="75" text-anchor="middle" font-family="Orbitron, sans-serif" font-size="80" font-weight="900" fill="#fff">C</text>
         </svg>
       </div>
       <div class="logo-text-wrap">
@@ -664,26 +664,62 @@ body.nav-open .nav-overlay{display:block}
     </div>
   </div>
 </div>
-
 <div class="modal" id="addModal">
   <div class="modal-box">
     <h3>Add New Account</h3>
     <p>Deploy a new account instance to the system.</p>
+
+    <!-- Tab switcher -->
+    <div class="seg" id="addMode" style="margin-bottom:14px">
+      <button type="button" class="on" data-mode="single">Single</button>
+      <button type="button" data-mode="bulk">Bulk Import</button>
+    </div>
+
+    <!-- Single account form -->
     <form id="addForm">
-      <div class="field">
-        <label>Authentication</label>
-        <select id="authType">
-          <option value="guest">Guest (UID + Password)</option>
-          <option value="token">Access Token</option>
-        </select>
-      </div>
-      <div id="guestFields">
-        <div class="field"><label>UID</label><input id="in-uid" placeholder="Enter UID" autocomplete="off"></div>
-        <div class="field"><label>Password</label><input id="in-pass" type="password" placeholder="••••••••" autocomplete="off"></div>
-      </div>
-      <div id="tokenFields" style="display:none">
+      <div id="singlePane">
+        <div class="field">
+          <label>Authentication</label>
+          <select id="authType">
+            <option value="guest">Guest (UID + Password)</option>
+            <option value="token">Access Token</option>
+          </select>
+        </div>
+        <div id="guestFields">
+          <div class="field"><label>UID</label><input id="in-uid" placeholder="Enter UID" autocomplete="off"></div>
+          <div class="field"><label>Password</label><input id="in-pass" type="password" placeholder="••••••••" autocomplete="off"></div>
+        </div>
+        <div id="tokenFields" style="display:none">
         <div class="field"><label>Access Token</label><textarea id="in-tok" placeholder="Paste full token here..."></textarea></div>
+        </div>
       </div>
+
+      <!-- Bulk upload pane -->
+      <div id="bulkPane" style="display:none">
+        <div class="field">
+          <label>Upload JSON File</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="file" id="bulkFile" accept=".json,application/json" style="flex:1;padding:9px;border-radius:10px;background:var(--surf);border:1px solid var(--line);font-size:12px">
+            <button type="button" class="btn ghost" id="clearFileBtn" title="Clear"><i class="fa-solid fa-xmark"></i></button>
+          </div>
+          <div style="margin-top:8px;font-size:11px;color:var(--text2);line-height:1.6">
+            <b>JSON format:</b><br>
+            <code style="font-family:'JetBrains Mono',monospace;font-size:10px;background:rgba(4,5,18,.5);padding:4px 8px;border-radius:6px;display:inline-block;margin-top:4px">
+              [{"uid":"123456","password":"abc"},{"token":"eyJ..."}]
+            </code>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Or Paste JSON</label>
+          <textarea id="bulkPaste" placeholder='[{"uid":"123","password":"xxx"}]' style="min-height:100px"></textarea>
+        </div>
+
+        <div id="bulkPreview" style="display:none;padding:10px;border-radius:10px;background:var(--grad-soft);border:1px solid var(--line2);font-size:11.5px;color:var(--a3);font-weight:600;margin-bottom:12px">
+          <i class="fa-solid fa-circle-check"></i> <span id="bulkCount">0 accounts ready</span>
+        </div>
+      </div>
+
       <div class="modal-actions">
         <button type="button" class="btn ghost" id="cancelAdd">Cancel</button>
         <button type="submit" class="btn pri"><i class="fa-solid fa-rocket"></i>Deploy</button>
@@ -1310,6 +1346,37 @@ function openAdd(){ $('addModal').classList.add('on'); }
 function closeAdd(){ $('addModal').classList.remove('on'); }
 async function submitAdd(e){
   e.preventDefault();
+
+  // ========== BULK MODE ==========
+  if(addMode === 'bulk'){
+    if(bulkAccounts.length === 0){ toast('No accounts to import', 'err'); return; }
+
+    var btn = e.target.querySelector('button[type="submit"]');
+    if(btn){ btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>Deploying...'; }
+
+    var success = 0, failed = 0;
+    toast('Deploying ' + bulkAccounts.length + ' accounts...');
+
+    for(var i = 0; i < bulkAccounts.length; i++){
+      try{
+        var r = await apiPost('/api/account/add', bulkAccounts[i]);
+        if(r && r.status === 'ok') success++;
+        else failed++;
+      }catch(err){ failed++; }
+    }
+
+    closeAdd();
+    toast('✅ ' + success + ' deployed, ❌ ' + failed + ' failed', success > 0 ? 'ok' : 'err');
+    bulkAccounts = [];
+    document.getElementById('bulkFile').value = '';
+    document.getElementById('bulkPaste').value = '';
+    document.getElementById('bulkPreview').style.display = 'none';
+    if(btn){ btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-rocket"></i>Deploy'; }
+    setTimeout(fetchStats, 800);
+    return;
+  }
+
+  // ========== SINGLE MODE ==========
   var type = $('authType').value;
   var payload;
   if(type === 'guest'){
@@ -1405,7 +1472,77 @@ document.addEventListener('keydown', function(e){
     else if(e.key === '4') switchView('prof');
   }
 });
+// ============ BULK IMPORT LOGIC ============
+var addMode = 'single';
+var bulkAccounts = [];
 
+// Tab switcher
+document.querySelectorAll('#addMode button').forEach(function(b){
+  b.addEventListener('click', function(){
+    addMode = b.dataset.mode;
+    document.querySelectorAll('#addMode button').forEach(function(x){ x.classList.toggle('on', x===b); });
+    var sp = document.getElementById('singlePane');
+    var bp = document.getElementById('bulkPane');
+    if(sp) sp.style.display = addMode==='single' ? 'block' : 'none';
+    if(bp) bp.style.display = addMode==='bulk' ? 'block' : 'none';
+  });
+});
+
+// File upload
+var bulkFileEl = document.getElementById('bulkFile');
+if(bulkFileEl){
+  bulkFileEl.addEventListener('change', function(e){
+    var file = e.target.files[0];
+    if(!file) return;
+    var reader = new FileReader();
+    reader.onload = function(ev){
+      try{
+        var data = JSON.parse(ev.target.result);
+        if(!Array.isArray(data)) throw new Error('Root must be array');
+        bulkAccounts = data.filter(function(x){ return x && (x.uid || x.token); });
+        document.getElementById('bulkPreview').style.display = 'block';
+        document.getElementById('bulkCount').textContent = bulkAccounts.length + ' accounts ready';
+        toast('✅ ' + bulkAccounts.length + ' loaded', 'ok');
+      }catch(err){
+        toast('❌ Invalid JSON: ' + err.message, 'err');
+        bulkAccounts = [];
+        document.getElementById('bulkPreview').style.display = 'none';
+      }
+    };
+    reader.readAsText(file);
+  });
+}
+
+// Paste JSON
+var bulkPasteEl = document.getElementById('bulkPaste');
+if(bulkPasteEl){
+  bulkPasteEl.addEventListener('input', function(e){
+    var txt = e.target.value.trim();
+    if(!txt){ bulkAccounts = []; document.getElementById('bulkPreview').style.display = 'none'; return; }
+    try{
+      var data = JSON.parse(txt);
+      if(!Array.isArray(data)) throw new Error('Root must be array');
+      bulkAccounts = data.filter(function(x){ return x && (x.uid || x.token); });
+      document.getElementById('bulkPreview').style.display = 'block';
+      document.getElementById('bulkCount').textContent = bulkAccounts.length + ' accounts ready';
+    }catch(err){
+      bulkAccounts = [];
+      document.getElementById('bulkPreview').style.display = 'none';
+    }
+  });
+}
+
+// Clear button
+var clearFileEl = document.getElementById('clearFileBtn');
+if(clearFileEl){
+  clearFileEl.addEventListener('click', function(){
+    document.getElementById('bulkFile').value = '';
+    document.getElementById('bulkPaste').value = '';
+    bulkAccounts = [];
+    document.getElementById('bulkPreview').style.display = 'none';
+  });
+}
+// ============ END BULK LOGIC ============
 function initBindings(){
   $$('.tdot').forEach(function(d){
     d.addEventListener('click', function(){ setTheme(d.dataset.theme); });

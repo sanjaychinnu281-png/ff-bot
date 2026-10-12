@@ -458,6 +458,9 @@ async def start_web_dashboard(host: str = "0.0.0.0", port: int = 5000):
     app.router.add_post("/api/account/refresh", handle_refresh_account)
     app.router.add_post("/api/account/mode", handle_mode_switch)
 
+    # Serve static files (music, assets)
+    app.router.add_static('/music/', path='templates/music/', name='music')
+
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host, port)

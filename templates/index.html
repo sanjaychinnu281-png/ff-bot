@@ -727,7 +727,15 @@ body.nav-open .nav-overlay{display:block}
     </form>
   </div>
 </div>
+<!-- Background Music -->
+<audio id="bgMusic" loop autoplay>
+  <source src="music/song1.mp3" type="audio/mpeg">
+</audio>
 
+<!-- Music Toggle Button -->
+<button id="musicToggle" style="position:fixed;bottom:18px;left:18px;z-index:150;width:38px;height:38px;border-radius:50%;background:var(--grad);color:#fff;display:grid;place-items:center;font-size:13px;border:0;cursor:pointer;box-shadow:var(--shadow)" title="Toggle Music">
+  <i class="fa-solid fa-pause"></i>
+</button>
 <div class="toasts" id="toasts"></div>
 
 <script>
@@ -1620,10 +1628,50 @@ async function startDashboard(){
   await fetchStats();
   setInterval(fetchStats, 5000);
 }
+// ============ BACKGROUND MUSIC ============
+var musicEl = null;
+var musicStarted = false;
 
+function initMusic(){
+  musicEl = document.getElementById('bgMusic');
+  if(!musicEl) return;
+
+  musicEl.volume = 0.4;
+
+  var btn = document.getElementById('musicToggle');
+  if(btn){
+    btn.addEventListener('click', function(e){
+      e.stopPropagation();
+      if(musicEl.paused){
+        musicEl.play().catch(function(){});
+        btn.innerHTML = '<i class="fa-solid fa-pause"></i>';
+      } else {
+        musicEl.pause();
+        btn.innerHTML = '<i class="fa-solid fa-play"></i>';
+      }
+    });
+  }
+
+  document.addEventListener('click', function tryStart(){
+    if(!musicStarted){
+      musicStarted = true;
+      musicEl.play().catch(function(){});
+      document.removeEventListener('click', tryStart);
+    }
+  });
+
+  musicEl.addEventListener('play', function(){
+    if(btn) btn.innerHTML = '<i class="fa-solid fa-pause"></i>';
+  });
+  musicEl.addEventListener('pause', function(){
+    if(btn) btn.innerHTML = '<i class="fa-solid fa-play"></i>';
+  });
+}
+// ============ END MUSIC ============
 function boot(){
   initBindings();
   startDashboard();
+  initMusic();
 }
 
 boot();

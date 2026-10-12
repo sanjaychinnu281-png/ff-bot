@@ -101,6 +101,9 @@ class BotState:
                     "success", uid_str
                 )
             self.recalc_totals()
+    def get_account_level(self, uid: str) -> int:
+        acc = self.accounts.get(str(uid))
+        return int(acc.get("level", 1) or 1) if acc else 1
 
     def get_account_mode(self, uid: str) -> str:
         acc = self.accounts.get(str(uid))

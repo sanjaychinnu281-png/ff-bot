@@ -2,6 +2,7 @@ httpx
 google-play-scraper
 pycryptodome
 protobuf-decoder
-protobuf
+protobuf>=4.0.0
 requests
 aiohttp
+flask

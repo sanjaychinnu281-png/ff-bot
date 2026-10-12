@@ -2023,13 +2023,13 @@ async def refresh_account_profile(account_data_or_uid: Any):
 
             # Keep the hot path in memory. Writing token_cache.json on every refresh
             # would add unnecessary disk I/O when many accounts are active.
-            # 👇 Sync to accounts.json
-_update_account_in_file(
-    uid=acc_id,
-    level=level,
-    region=account_data.get('region', 'IND'),
-    nickname=nickname
-)
+            # # 👇 Sync to accounts.json
+            _update_account_in_file(
+                uid=acc_id,
+                level=level,
+                region=account_data.get('region', 'IND'),
+                nickname=nickname
+            )
             print_info(f"[EXP-REFRESH] UID {acc_id} -> Level: {level}, EXP: {exp}")
             return True
     except asyncio.CancelledError:
@@ -2469,15 +2469,15 @@ async def main():
         print_error(f"Could not start web dashboard: {e}")
 
     async def on_account_added_handler(data):
-    if "token" in data and data["token"]:
-        t = str(data["token"]).strip()
-        key = t[:10]
-        existing = bot_state.account_workers.get(key)
-        if existing and not existing.done():
-            bot_state.log(f"Account worker already running: {key}", "warning")
-            return
-        task = asyncio.create_task(account_loop_token(t))
-        bot_state.account_workers[key] = task
+        if "token" in data and data["token"]:
+            t = str(data["token"]).strip()
+            key = t[:10]
+            existing = bot_state.account_workers.get(key)
+            if existing and not existing.done():
+                bot_state.log(f"Account worker already running: {key}", "warning")
+                return
+            task = asyncio.create_task(account_loop_token(t))
+            bot_state.account_workers[key] = task
 
         # Save token to accounts.json
         accounts = _load_accounts_file()
@@ -2489,13 +2489,13 @@ async def main():
             _save_accounts_to_file(accounts)
             print_success(f"[ACCOUNTS] Token saved")
 
-    elif "uid" in data and "password" in data:
-        u = str(data["uid"]).strip()
-        p = str(data["password"]).strip()
-        existing = bot_state.account_workers.get(u)
-        if existing and not existing.done():
-            bot_state.log(f"Account worker already running: {u}", "warning", u)
-            return
+        elif "uid" in data and "password" in data:
+            u = str(data["uid"]).strip()
+            p = str(data["password"]).strip()
+            existing = bot_state.account_workers.get(u)
+            if existing and not existing.done():
+                bot_state.log(f"Account worker already running: {u}", "warning", u)
+                return
         task = asyncio.create_task(account_loop_guest(u, p))
         bot_state.account_workers[u] = task
 

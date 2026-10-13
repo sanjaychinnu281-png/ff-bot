@@ -261,7 +261,7 @@ headers = {
     'User-Agent': 'UnityPlayer/2018.4.12f1 (UnityWebRequest/1.0, libcurl/8.5.0-DEV)',
     'Connection': 'Keep-Alive',
     'Accept-Encoding': 'gzip',
-    'Content-Type': 'application/x-www-form-urlencoded',
+    'Content-Type': 'application/octet-stream',
     'Expect': '100-continue',
     'X-Unity-Version': '2018.4.12f1',
     'X-GA-SV': '1789535859',
@@ -801,19 +801,59 @@ async def send_getlogin(data, base_url, token, release_version):
             print_error("[GetLoginData] Empty payload — aborting request")
             return None
 
-        # 🔧 FIX: normalize base URL (same style as MajorLogin)
+        # 🔧 Normalize base URL (same style as MajorLogin)
         base = base_url.rstrip('/')
         url = f"{base}/GetLoginData"
 
         req_headers = headers.copy()
         req_headers["ReleaseVersion"] = release_version
         req_headers['Authorization'] = f"Bearer {token}"
-        req_headers['Host'] = "clientbp.ppmainecoonghj.com"
+        # ❌ REMOVED: req_headers['Host'] = "clientbp.ppmainecoonghj.com"
+        # httpx will set Host from the URL automatically, which is what
+        # Garena's edge expects. Manually overriding Host caused HTTP 500.
+
         response = await client.post(url, headers=req_headers, data=data)
 
         if response.status_code != 200:
+            # Show first 200 bytes of the response body for diagnostics
+            preview = response.content[:200]
             print_error(f"[GetLoginData] HTTP {response.status_code} from {url}")
+            print_error(f"[GetLoginData] Body[:200] = {preview!r}")
             return None
+
+        response_content = response.content
+
+        res_proto = CguTeam_pb2.GetLoginDataRes()
+        parsed_successfully = False
+        try:
+            res_proto.ParseFromString(response_content)
+            if res_proto.functional_addrs or res_proto.informational_addrs:
+                parsed_successfully = True
+        except Exception:
+            pass
+
+        if not parsed_successfully:
+            for offset in range(min(128, len(response_content))):
+                try:
+                    candidate = CguTeam_pb2.GetLoginDataRes()
+                    candidate.ParseFromString(response_content[offset:])
+                    if candidate.functional_addrs or candidate.informational_addrs:
+                        res_proto = candidate
+                        break
+                except Exception:
+                    pass
+
+        dict_res = {}
+        try:
+            parsed = Parser().parse(response_content.hex())
+            dict_res = await parse_results(parsed)
+        except Exception:
+            pass
+
+        return res_proto, dict_res
+    except Exception as e:
+        print_error(f"[GetLoginData] Exception: {e}")
+        return None
 
         response_content = response.content
 

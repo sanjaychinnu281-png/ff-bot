@@ -40,9 +40,32 @@ from dashboard_server import bot_state, start_web_dashboard
 # ==================== CONFIGURATION ====================
 WEB_HOST = "0.0.0.0"
 WEB_PORT = int(os.environ.get("PORT", 20333))
-ACCOUNTS_FILE = "accounts.json"
-TOKEN_CACHE_FILE = "token_cache.json"
-DEVICES_FILE = "devices.json"
+
+# ==================== PERSISTENT DATA DIR ====================
+# Railway Volume mount at /app/data -> persist across restarts
+# Fallback to script dir if not available
+def _resolve_data_dir() -> str:
+    candidates = ["/app/data", "/data"]
+    for c in candidates:
+        try:
+            if os.path.isdir(c) and os.access(c, os.W_OK):
+                return c
+            if not os.path.exists(c):
+                try:
+                    os.makedirs(c, exist_ok=True)
+                    if os.access(c, os.W_OK):
+                        return c
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    # Fallback: script directory
+    return os.path.dirname(os.path.abspath(__file__))
+
+DATA_DIR = _resolve_data_dir()
+ACCOUNTS_FILE = os.path.join(DATA_DIR, "accounts.json")
+TOKEN_CACHE_FILE = os.path.join(DATA_DIR, "token_cache.json")
+DEVICES_FILE = os.path.join(DATA_DIR, "devices.json")
 TOKEN_CACHE_TTL = 1200
 
 START_MATCH_INTERVAL = 4.0
@@ -66,6 +89,15 @@ BR_MAP_ID = 1
 ANTI_AFK_FIRE_CHANCE = 0.45
 ANTI_AFK_MIN_INTERVAL = 1.8
 ANTI_AFK_MAX_INTERVAL = 3.5
+
+# ==================== LOGIN THROTTLE (ANTI-429) ====================
+# Yeh 429 "Too Many Requests" fix karta hai jab bahut accounts ek saath
+# login karne ki koshish karte hain.
+MAX_CONCURRENT_LOGINS = 3          # ek time pe max 3 accounts login
+LOGIN_DELAY_BETWEEN = 2.0          # har login ke beech 2 sec gap
+LOGIN_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_LOGINS)
+_login_lock = asyncio.Lock()
+_last_login_time = 0.0
 
 # ==================== MATCH WATCHDOG & REGION ROTATION ====================
 MATCH_SEARCH_TIMEOUT    = 90.0
@@ -560,72 +592,124 @@ async def aes_encrypt(payload, key, iv):
     return cipher.encrypt(pad(payload, AES.block_size))
 
 
+# ==================== RATE-LIMITED PLAYSTORE ====================
+_playstore_cache: Dict[str, Tuple[str, float]] = {}
+_PLAYSTORE_CACHE_TTL = 1800.0  # 30 minutes
+_playstore_lock = asyncio.Lock()
+
+
 async def get_playstore_version():
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: play_scraper('com.dts.freefireth', lang='hi', country='id')
-    )
-    return result.get("version")
+    global _last_login_time
+    now = time.time()
+    cache_key = "com.dts.freefireth"
+    if cache_key in _playstore_cache:
+        ver, exp = _playstore_cache[cache_key]
+        if now < exp:
+            return ver
+
+    # Throttle this call too (uses same 429-prone endpoint)
+    async with LOGIN_SEMAPHORE:
+        async with _login_lock:
+            elapsed = time.time() - _last_login_time
+            if elapsed < LOGIN_DELAY_BETWEEN:
+                await asyncio.sleep(LOGIN_DELAY_BETWEEN - elapsed)
+            _last_login_time = time.time()
+
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: play_scraper('com.dts.freefireth', lang='hi', country='id')
+        )
+        ver = result.get("version") if result else None
+        if ver:
+            _playstore_cache[cache_key] = (ver, now + _PLAYSTORE_CACHE_TTL)
+        return ver
 
 
 async def version_config():
-    app_version = await get_playstore_version()
-    api_url = (
-        "https://version.ggwhitehawk.com/live/ver.php"
-        f"?version={app_version}"
-        "&lang=hi&device=android&channel=android"
-        "&appstore=googleplay&region=ID"
-        "&whitelist_version=1.3.0&whitelist_sp_version=1.0.0"
-    )
-    try:
-        response = await client.get(api_url)
-        response.raise_for_status()
-        data = response.json()
-        server_url = data.get("server_url")
-        remote_version = data.get("remote_version")
-        latest_release_version = data.get("latest_release_version")
-        if not server_url or not remote_version or not latest_release_version:
+    global _last_login_time
+    # Throttle this too - same IP block risk
+    async with LOGIN_SEMAPHORE:
+        async with _login_lock:
+            elapsed = time.time() - _last_login_time
+            if elapsed < LOGIN_DELAY_BETWEEN:
+                await asyncio.sleep(LOGIN_DELAY_BETWEEN - elapsed)
+            _last_login_time = time.time()
+
+        app_version = await get_playstore_version()
+        api_url = (
+            "https://version.ggwhitehawk.com/live/ver.php"
+            f"?version={app_version}"
+            "&lang=hi&device=android&channel=android"
+            "&appstore=googleplay&region=ID"
+            "&whitelist_version=1.3.0&whitelist_sp_version=1.0.0"
+        )
+        try:
+            response = await client.get(api_url)
+            response.raise_for_status()
+            data = response.json()
+            server_url = data.get("server_url")
+            remote_version = data.get("remote_version")
+            latest_release_version = data.get("latest_release_version")
+            if not server_url or not remote_version or not latest_release_version:
+                return None
+            return latest_release_version, remote_version, server_url
+        except Exception:
             return None
-        return latest_release_version, remote_version, server_url
-    except Exception:
-        return None
 
 
 async def get_access_token(uid, password):
-    url = "https://100067.connect.garena.com/oauth/guest/token/grant"
-    hdrs = {
-        "Host": "100067.connect.garena.com",
-        "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 12; SM-G998B Build/SP1A.210812.016)",
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "close"
-    }
-    data = {
-        "uid": uid,
-        "password": password,
-        "response_type": "token",
-        "client_type": "2",
-        "client_secret": "2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3",
-        "client_id": "100067"
-    }
-    for attempt in range(5):
-        try:
-            response = await client.post(url, headers=hdrs, data=data)
-            if response.status_code == 200:
-                response_data = response.json()
-                open_id = response_data.get("open_id")
-                access_token = response_data.get("access_token")
-                platform = response_data.get("platform", 4)
-                if open_id and access_token:
-                    return open_id, access_token, platform
-            if response.status_code == 429:
-                await asyncio.sleep(1)
-                continue
-        except Exception:
-            pass
-        await asyncio.sleep(0.5)
-    return None
+    """
+    Garena guest login.
+    THROTTLED: max 3 concurrent + 2s gap between logins -> avoids 429.
+    """
+    global _last_login_time
+
+    async with LOGIN_SEMAPHORE:
+        # Enforce global gap
+        async with _login_lock:
+            now = time.time()
+            elapsed = now - _last_login_time
+            if elapsed < LOGIN_DELAY_BETWEEN:
+                await asyncio.sleep(LOGIN_DELAY_BETWEEN - elapsed)
+            _last_login_time = time.time()
+
+        url = "https://100067.connect.garena.com/oauth/guest/token/grant"
+        hdrs = {
+            "Host": "100067.connect.garena.com",
+            "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 12; SM-G998B Build/SP1A.210812.016)",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "close"
+        }
+        data = {
+            "uid": uid,
+            "password": password,
+            "response_type": "token",
+            "client_type": "2",
+            "client_secret": "2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3",
+            "client_id": "100067"
+        }
+        for attempt in range(5):
+            try:
+                response = await client.post(url, headers=hdrs, data=data)
+                if response.status_code == 200:
+                    response_data = response.json()
+                    open_id = response_data.get("open_id")
+                    access_token = response_data.get("access_token")
+                    platform = response_data.get("platform", 4)
+                    if open_id and access_token:
+                        return open_id, access_token, platform
+                if response.status_code == 429:
+                    # Rate limited -> exponential backoff
+                    wait = min(30, 3 * (2 ** attempt))
+                    print_warning(f"[LOGIN] 429 rate-limited, backoff {wait}s (attempt {attempt+1})")
+                    await asyncio.sleep(wait)
+                    continue
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+        return None
 
 
 async def parse_results(parsed_results):
@@ -820,12 +904,6 @@ async def send_getlogin(data, base_url, token, release_version):
 
 # ==================== HTTP PING ====================
 async def send_ping(account_id, token, release_version):
-    """
-    POST https://loginbp.ppmainecoonghj.com/Ping
-      Body    : 16 bytes (account_id int64 LE + timestamp_ms uint64 LE)
-      Headers : sama seperti GetLoginData (dynamic x-ga-sv, x-request-start, x-railway-request-id)
-      Response: 0 bytes -> cek HTTP 200 saja
-    """
     try:
         try:
             acc_id_int = int(account_id)
@@ -2645,7 +2723,6 @@ async def run_account_worker(account_data: Dict, label: str):
                           account_data['aes_ak'], account_data['iv_i'], region=reg)
         )
 
-        # HTTP Ping worker
         if ENABLE_HTTP_PING:
             ping_task = asyncio.create_task(
                 ping_worker(
@@ -2775,10 +2852,13 @@ async def main():
     print_colored("    TEAM 84FF - FreeFire Level Up Bot (Web Dashboard Mode)", Colors.GREEN)
     print_colored("   Persistent Device ID + TRUE Parallel + Smart DNS", Colors.WHITE)
     print_colored("=" * 60, Colors.CYAN)
+    print_info(f"Data directory: {DATA_DIR}")
     print_info(f"Start Match Interval: {START_MATCH_INTERVAL}s")
     print_info(f"Offline Wait: {NEW_MATCH_DELAY}s (after match found)")
     print_info(f"EXP Refresh: {EXP_REFRESH_INTERVAL}s interval + post-match trigger")
     print_info("Device System: 1 ID = 1 Persistent Device ID (devices.json)")
+    print_colored("-" * 60, Colors.MAGENTA)
+    print_success(f"[THROTTLE] Login rate-limit: max {MAX_CONCURRENT_LOGINS} concurrent, {LOGIN_DELAY_BETWEEN}s gap between logins")
     print_colored("-" * 60, Colors.MAGENTA)
     print_info(f"MODE SWITCH:")
     print_info(f"   - Level < {LONE_WOLF_UNLOCK_LEVEL}  -> BATTLE ROYALE  (mode_id={BR_MODE_ID}, map_id={BR_MAP_ID})")
@@ -2810,14 +2890,6 @@ async def main():
         print_info(f"   - Pattern      : {MOVEMENT_PATTERN} | Radius: {MOVEMENT_RADIUS}")
         print_info(f"   - Speed Range  : {MOVEMENT_SPEED_MIN}x - {MOVEMENT_SPEED_MAX}x")
         print_info(f"   - Base Tick    : {MOVEMENT_TICK_MS}ms")
-        print_info(f"   - States       : idle/walk/run/sprint/jump/crouch/prone")
-        print_info(f"     - idle   = {MOVEMENT_STATE_IDLE_CHANCE*100:.0f}%")
-        print_info(f"     - walk   = {MOVEMENT_STATE_WALK_CHANCE*100:.0f}%")
-        print_info(f"     - run    = {MOVEMENT_STATE_RUN_CHANCE*100:.0f}%")
-        print_info(f"     - sprint = {MOVEMENT_STATE_SPRINT_CHANCE*100:.0f}%")
-        print_info(f"     - jump   = {MOVEMENT_STATE_JUMP_CHANCE*100:.0f}%")
-        print_info(f"     - crouch = {MOVEMENT_STATE_CROUCH_CHANCE*100:.0f}%")
-        print_info(f"     - prone  = {MOVEMENT_STATE_PRONE_CHANCE*100:.0f}%")
     print_colored("=" * 60, Colors.CYAN)
 
     try:

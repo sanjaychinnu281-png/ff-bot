@@ -585,7 +585,7 @@ async def build_majorlogin_payload(open_id, access_token, platform, client_versi
         payload_dict = {
             3:   str(datetime.now())[:-7],
             4:   "free fire", 5: "1",
-            7:   str(client_version) if client_version else "1.132.8",
+            7:   str(client_version) if client_version else "1.132.10",
             8:   str(device_info.get("system_software", "Android OS 15 / API-35")),
             9:   "Handheld", 10: "Airtel", 11: "CarrierDataNetwork",
             12:  str(device_info.get("screen_width", 1639)),
@@ -1673,11 +1673,15 @@ async def _process_account_uid_pass(uid: str, password: str) -> Optional[Dict]:
         return cached
     print_info(f"[LOGIN] Full login for UID {uid}...")
     try:
+        global _VERSION_CONFIG_CACHE, _VERSION_CONFIG_CACHE_AT
+        _VERSION_CONFIG_CACHE = None
+        _VERSION_CONFIG_CACHE_AT = 0.0
         verconfig_res = await version_config()
         if verconfig_res is None:
             print_error(f"[LOGIN] version_config failed for UID {uid}")
             return None
         release_version, client_version, server_url = verconfig_res
+        print_info(f"[LOGIN] Using client_version={client_version} | release={release_version} | server={server_url}")
         tokengrant_response = await get_access_token(uid, password)
         if tokengrant_response is None:
             print_error(f"[LOGIN] get_access_token failed for UID {uid}")
@@ -1742,6 +1746,7 @@ async def _process_account_token(access_token: str) -> Optional[Dict]:
             print_error("[LOGIN] version_config failed (token flow)")
             return None
         release_version, client_version, server_url = verconfig_res
+        print_info(f"[LOGIN] Using client_version={client_version} | release={release_version} | server={server_url}")
         import requests
         url = f"https://100067.connect.garena.com/oauth/token/inspect?token={access_token}"
         hdrs = {

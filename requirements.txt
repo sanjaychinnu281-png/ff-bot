@@ -1,1 +1,7 @@
 httpx>=0.27.0
+aiohttp>=3.9.0
+pycryptodome>=3.20.0
+google-play-scraper>=1.2.7
+protobuf>=5.26.0
+protobuf-decoder>=0.0.5
+requests>=2.31.0
